@@ -6,6 +6,10 @@ v0.1
 
 Tools to help you manage your https://factorio.com/[Factorio] server.
 
+CAUTION: This project is still in its early days, and development is still
+ongoing. Until the project version reaches v1, be aware that there may be some
+breaking changes between releases.
+
 == Installation
 
 . `mkdir /opt/factorio`
@@ -20,6 +24,21 @@ Tools to help you manage your https://factorio.com/[Factorio] server.
 
 *facmod* helps you manage the mods on your Factorio server.
 
+==== Synopsis
+
+[source]
+----
+facmod disable [FLAGS] [MOD ...]
+facmod install [FLAGS] [MOD ...]
+facmod list [FLAGS]
+facmod remove [FLAGS] [MOD ...]
+facmod search
+facmod update [FLAGS]
+facmod upgrade [FLAGS] [MOD ...]
+----
+
+==== Description
+
 Certain operations are performed locally, such as `facmod search`, to minimize
 unnecessary traffic to Factorio's https://wiki.factorio.com/Mod_portal_API[Mod
 portal API].
@@ -31,26 +50,26 @@ When a user runs `facmod update`, *facmod* will fetch all of the paginated
 results from `https://mods.factorio.com/api/mods`, and cache them in a
 https://www.sqlite.org/index.html[SQLite] database.
 
-==== Commands
+==== Subcommands
 
-`facmod disable [MOD ...]`:: Disable one or more mods.
-Disabling a mod does not uninstall it
-`facmod install [MOD ...]`:: Install one or more mods.
-`facmod list`:: List installed mods.
-`facmod remove [MOD ...]`:: Uninstall (remove) one or more mods.
-`facmod search`:: Search for mods.
-The Mod portal API only allows users to filter results based on name matching,
-supported Factorio versions, and whether or not the mod is deprecated.
-The searching facility provided by *facmod* provides additional search features,
-which are described in <<Searching for Mods>>.
-This command requires the mod cache database to have been initialized.
-If the local mod cache database has not been initialized, or needs to by
-updated, the user will be prompted to run `facmod update`.
-`facmod update`:: Updates the mod cache database with the Mod Portal API so
-you can perform more actions locally.
-`facmod upgrade [MOD ...]`:: Upgrade all of the currently-installed mods.
-Specifying one or more `MOD` arguments limits the process to upgrade only those
-mods.
+`disable [MOD ...]`:: Disable one or more mods. Disabling a mod does not
+uninstall it. *NOT IMPLEMENTED*
+`enable [MOD ...]`:: Enable an installed mod. *NOT IMPLEMENTED*
+`install [MOD ...]`:: Install one or more mods. *NOT IMPLEMENTED*
+`list`:: List installed mods. *IN PROGRESS*
+`remove [MOD ...]`:: Uninstall (remove) one or more mods. *NOT IMPLEMENTED*
+`search`:: Search for mods. The Mod portal API only allows users to filter
+results based on name matching, supported Factorio versions, and whether or not
+the mod is deprecated. The searching facility provided by *facmod* provides
+additional search features, which are described in <<Searching for Mods>>. This
+command requires the mod cache database to have been initialized. If the local
+mod cache database has not been initialized, or needs to by updated, the user
+will be prompted to run `facmod update`. *NOT IMPLEMENTED*
+`update`:: Updates the mod cache database with the Mod Portal API so you can
+perform more actions locally. *IN PROGRESS*
+`upgrade [MOD ...]`:: Upgrade all of the currently-installed mods. Specifying
+one or more `MOD` arguments limits the process to upgrade only those mods. *NOT
+IMPLEMENTED*
 
 ==== Searching for Mods
 
@@ -62,5 +81,3 @@ TODO: Detail all of the ways users can search for mods with `facmod search`.
 `$XDG_CACHE_HOME/facmod/mod`:: Cache directory for downloaded mods.
 
 ==== Examples
-
-==== Authors
