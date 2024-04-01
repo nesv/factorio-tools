@@ -14,12 +14,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
+	"time"
 
+	"github.com/Masterminds/squirrel"
 	progressbar "github.com/schollz/progressbar/v3"
 	_ "modernc.org/sqlite"
 
-	"git.sr.ht/~nesv/factorio-tools/httputil"
+	"github.com/nesv/factorio-tools/httputil"
 )
 
 // Cache is a local database that is used for caching information about Factorio mods.
@@ -303,7 +306,7 @@ func (c *Cache) Update(ctx context.Context) error {
 				r.DownloadURL,
 				r.FileName,
 				r.InfoJSON,
-				r.ReleasedAt,
+				r.ReleasedAt.Format(time.RFC3339),
 				r.Version,
 				r.SHA1,
 			); err != nil {
@@ -355,4 +358,205 @@ func (c *Cache) Clean() error {
 
 		return nil
 	})
+}
+
+// Search returns a list of mods matching the search term, with zero or more of
+// the given options applied.
+//
+// Search will return a non-nil error if the search term is an empty string,
+// or if there is an error with any of the provided options.
+func (c *Cache) Search(ctx context.Context, searchTerm string, options ...SearchOption) ([]M, error) {
+	if searchTerm == "" {
+		return nil, errors.New("empty search term")
+	}
+
+	sopts := searchOptions{term: searchTerm}
+	for _, opt := range options {
+		if err := opt(&sopts); err != nil {
+			return nil, fmt.Errorf("apply option: %w", err)
+		}
+	}
+
+	// Build the query.
+	//
+	// SELECT m.name, m.summary, r.released_at, r.version
+	// FROM mods AS m
+	// JOIN latest_releases USING (name)
+	// WHERE r.info_json ->> '$.factorio_version' >= '1.1'
+	// AND m.name LIKE '%$1%'
+	selectQuery := squirrel.Select(
+		"m.name",
+		"m.summary",
+		"m.category",
+		"r.released_at",
+		"r.version",
+	).
+		From("mods AS m").
+		Join("latest_releases AS r USING (name)").
+		Where(squirrel.GtOrEq{`r.info_json ->> '$.factorio_version'`: "1.1"}).
+		Where(squirrel.Like{"m.name": "%" + sopts.term + "%"})
+
+	if sopts.sortByDate {
+		selectQuery = selectQuery.OrderBy("r.released_at DESC")
+	}
+
+	if nc := len(sopts.categories); nc > 0 {
+		cc := make([]string, nc)
+		for i, c := range sopts.categories {
+			cc[i] = string(c)
+		}
+		selectQuery = selectQuery.Where(squirrel.Eq{"m.category": cc})
+	}
+
+	query, args, err := selectQuery.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	println("SQL: " + query)
+
+	var mm []M
+	if err := c.withLock(func() error {
+		return c.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			rows, err := tx.QueryContext(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+
+			for rows.Next() {
+				var name, summary, category, releasedAt, version string
+				if err := rows.Scan(&name, &summary, &category, &releasedAt, &version); err != nil {
+					return fmt.Errorf("scan row: %w", err)
+				}
+
+				relAt, err := time.Parse(time.RFC3339, releasedAt)
+				if err != nil {
+					return fmt.Errorf("parse released at timestamp: %w", err)
+				}
+
+				mm = append(mm, M{
+					Name:       name,
+					Versions:   []Version{parseVersion(version)},
+					ReleasedAt: relAt,
+					Summary:    summary,
+					Category:   category,
+				})
+			}
+
+			return nil
+		})
+	}); err != nil {
+		return nil, fmt.Errorf("query database: %w", err)
+	}
+
+	return mm, err
+}
+
+// SearchOption is a functional option that can be passed to [Cache.Search] to
+// adjust how searching is handled.
+type SearchOption func(*searchOptions) error
+
+type searchOptions struct {
+	term string // The search term.
+
+	// Options that apply to how term is used or interpreted.
+	nameOnly bool // Only attempt to match the search term to a mod's name.
+	isRegexp bool // Interpret term as a regular expression.
+
+	// Options that filter the results.
+	categories []Category // Limit the search term to these mod categories.
+
+	// Options that pertain to filtering.
+	sortByDate bool // Sort by released_at date, descending.
+}
+
+// NameOnly restricts the mod search to only match on a mod's name.
+// By default, a mod's name and summary will be considered.
+func NameOnly() SearchOption {
+	return func(o *searchOptions) error {
+		o.nameOnly = true
+		return nil
+	}
+}
+
+// RegexpTerm tells [Cache.Search] to treat the search term as a regular expression.
+// When this option is provided, the search term will be compiled by [regexp.Compile]
+// to ensure it is valid.
+func RegexpTerm() SearchOption {
+	return func(o *searchOptions) error {
+		if _, err := regexp.Compile(o.term); err != nil {
+			return fmt.Errorf("compile regexp: %w", err)
+		}
+		o.isRegexp = true
+		return nil
+	}
+}
+
+// WithCategories limits the results of a search to only return mods with the
+// specified categories.
+func WithCategories(categories ...Category) SearchOption {
+	return func(o *searchOptions) error {
+		if len(categories) == 0 {
+			return nil
+		}
+
+		cc := make([]Category, len(categories))
+		for i, c := range categories {
+			switch c {
+			case NoCategory, Content, Overhaul, Tweaks, Utilities,
+				Scenarios, ModPacks, Localizations, Internal:
+				cc[i] = c
+			default:
+				if string(c) == "" {
+					continue
+				}
+				return fmt.Errorf("unknown category: %s", c)
+			}
+		}
+		o.categories = cc
+
+		return nil
+	}
+}
+
+// SortByDate sorts the results by the date the latest version of the mod was
+// released, in descending order (most-recently-released mod first).
+func SortByDate() SearchOption {
+	return func(o *searchOptions) error {
+		o.sortByDate = true
+		return nil
+	}
+}
+
+// Category is used to describe a mod.
+// Mods can only belong to a single category.
+type Category string
+
+const (
+	NoCategory    Category = "no-category"
+	Content                = "content"       // Mods introducing new content into the game.
+	Overhaul               = "overhaul"      // Large total conversion mods.
+	Tweaks                 = "tweaks"        // Small changes concerning balance, gameplay, or graphics.
+	Utilities              = "utilities"     // Providing the player with new tools or adjusting the game interface, without fundamentally changing gameplay.
+	Scenarios              = "scenarios"     // Scenarios, maps, puzzles.
+	ModPacks               = "mod-packs"     // Collections of mods with tweaks to make them work together.
+	Localizations          = "localizations" // Translations for other mods.
+	Internal               = "internal"      // Lua libraries for use by other mods and submods that are parts of a larger mod.
+)
+
+// Categories returns a list of all available categories.
+func Categories() []string {
+	return []string{
+		"",
+		string(NoCategory),
+		string(Content),
+		string(Overhaul),
+		string(Tweaks),
+		string(Utilities),
+		string(Scenarios),
+		string(ModPacks),
+		string(Localizations),
+		string(Internal),
+	}
 }

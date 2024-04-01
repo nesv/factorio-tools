@@ -4,13 +4,13 @@ go 1.22.1
 
 require (
 	github.com/Masterminds/squirrel v1.5.4
+	github.com/dustin/go-humanize v1.0.1
 	github.com/peterbourgon/ff/v4 v4.0.0-alpha.4
 	github.com/schollz/progressbar/v3 v3.14.2
 	modernc.org/sqlite v1.29.5
 )
 
 require (
-	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect

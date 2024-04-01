@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Load collects all of the mods currently installed to the installation directory.
@@ -62,6 +63,15 @@ type M struct {
 	// ascending order so the latest version is the last element in the
 	// slice.
 	Versions []Version `json:"-"`
+
+	// The time at which the latest version was released.
+	ReleasedAt time.Time `json:"-"`
+
+	// A brief summary of the mod.
+	Summary string `json:"-"`
+
+	// The mod's category.
+	Category string `json:"-"`
 }
 
 func (m *M) findInstalledVersions(installDir string) error {

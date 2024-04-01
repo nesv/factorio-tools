@@ -17,10 +17,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	humanize "github.com/dustin/go-humanize"
 	ff "github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
 
-	"git.sr.ht/~nesv/factorio-tools/mods"
+	"github.com/nesv/factorio-tools/mods"
 )
 
 func main() {
@@ -55,14 +56,36 @@ func main() {
 		Exec:      runUpdate,
 	}
 
+	searchFlags := ff.NewFlagSet("search").SetParent(rootFlags)
+	searchFlags.BoolVar(&searchSortByDate, 't', "sort-by-date", "Sort results by release date")
+	searchFlags.StringEnumVar(&searchCategory, 'c', "category", "Only show mods in the given category", mods.Categories()...)
+	searchCmd := &ff.Command{
+		Name:      "search",
+		Usage:     "facmod search [FLAGS] SEARCH_TERM",
+		ShortHelp: "Search the local mod cache",
+		Flags:     searchFlags,
+		Exec:      runSearch,
+	}
+
+	categoriesFlags := ff.NewFlagSet("categories").SetParent(rootFlags)
+	categoriesCmd := &ff.Command{
+		Name:      "categories",
+		Usage:     "facmod categories",
+		ShortHelp: "List all available mod categories",
+		Flags:     categoriesFlags,
+		Exec:      runCategories,
+	}
+
 	root := &ff.Command{
 		Name:      "facmod",
 		Usage:     "facmod [FLAGS] SUBCOMMAND ...",
 		ShortHelp: "Factorio server mod manager",
 		Flags:     rootFlags,
 		Subcommands: []*ff.Command{
+			categoriesCmd,
 			cleanCmd,
 			listCmd,
+			searchCmd,
 			updateCmd,
 		},
 	}
@@ -169,5 +192,75 @@ func runList(ctx context.Context, args []string) error {
 		fmt.Fprintf(tw, "%s\t%s\t%t\n", m.Name, latestVersion, m.Enabled)
 	}
 
+	return nil
+}
+
+// Set by command-line flags.
+var (
+	searchSortByDate bool
+	searchCategory   string
+)
+
+func runSearch(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("at least one search term is required")
+	}
+
+	cacheDir, err := makeCacheDir()
+	if err != nil {
+		return fmt.Errorf("make cache dir: %w", err)
+	}
+
+	cache, err := mods.OpenCache(cacheDir)
+	if err != nil {
+		return fmt.Errorf("open cache: %w", err)
+	}
+	defer cache.Close()
+
+	var options []mods.SearchOption
+	if searchSortByDate {
+		options = append(options, mods.SortByDate())
+	}
+	if searchCategory != "" {
+		c := mods.Category(searchCategory)
+		options = append(options, mods.WithCategories(c))
+	}
+
+	mm, err := cache.Search(ctx, args[0], options...)
+	if err != nil {
+		return err
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 1, ' ', 0)
+	defer tw.Flush()
+
+	headers := []string{"NAME", "CATEGORY", "VERSION", "RELEASED", "SUMMARY"}
+	fmt.Fprintln(tw, strings.Join(headers, "\t"))
+
+	for _, m := range mm {
+		relt := humanize.Time(m.ReleasedAt)
+		summary := m.Summary
+		if len(summary) > 30 {
+			summary = summary[0:30] + "..."
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			m.Name,
+			m.Category,
+			m.Versions[0],
+			relt,
+			summary,
+		)
+	}
+
+	return nil
+}
+
+func runCategories(ctx context.Context, args []string) error {
+	for _, c := range mods.Categories() {
+		if c == "" {
+			continue
+		}
+		fmt.Println(c)
+	}
 	return nil
 }
