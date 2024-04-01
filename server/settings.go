@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 )
 
 // DefaultSettings returns [Settings] with default values set.
@@ -27,6 +29,26 @@ func DefaultSettings() *Settings {
 		MaximumSegmentSize:          100,
 		MaximumSegmentSizePeerCount: 10,
 	}
+}
+
+// LoadSettings loads "data/server-settings.json" from the installation directory.
+func LoadSettings(installDir string) (Settings, error) {
+	settingsPath := filepath.Join(installDir, "data", "server-settings.json")
+	f, err := os.Open(settingsPath)
+	if err != nil {
+		return Settings{}, fmt.Errorf("open server-settings.json: %w", err)
+	}
+	defer f.Close()
+	return ReadSettings(f)
+}
+
+// ReadSettings reads in [Settings] from r.
+func ReadSettings(r io.Reader) (Settings, error) {
+	var s Settings
+	if _, err := s.ReadFrom(r); err != nil {
+		return Settings{}, fmt.Errorf("read from: %w", err)
+	}
+	return s, nil
 }
 
 // Settings holds the settings for the Factorio game server.
