@@ -31,7 +31,7 @@ func Load(installationDir string) ([]M, error) {
 
 	mods := make([]M, len(list.Mods))
 	for i, m := range list.Mods {
-		if err := m.findInstalledVersions(installationDir); err != nil {
+		if err := m.FindInstalledVersions(installationDir); err != nil {
 			return nil, fmt.Errorf("find installed versions: %w", err)
 		}
 		mods[i] = m
@@ -74,7 +74,7 @@ type M struct {
 	Category string `json:"-"`
 }
 
-func (m *M) findInstalledVersions(installDir string) error {
+func (m *M) FindInstalledVersions(installDir string) error {
 	pattern := filepath.Join(installDir, "mods", fmt.Sprintf("%s_*.zip", m.Name))
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
@@ -84,7 +84,15 @@ func (m *M) findInstalledVersions(installDir string) error {
 	versions := make([]Version, len(matches))
 	for i, match := range matches {
 		mp := modpath(match)
-		versions[i] = mp.version()
+		v := mp.version()
+
+		info, err := LoadInfo(match)
+		if err != nil {
+			return fmt.Errorf("load info: %w", err)
+		}
+		v.Info = info
+
+		versions[i] = v
 	}
 	slices.SortFunc(versions, func(a, b Version) int {
 		if a.Major > b.Major {
@@ -110,6 +118,16 @@ func (m *M) findInstalledVersions(installDir string) error {
 }
 
 type modpath string
+
+// name returns the name of the mod.
+func (m modpath) name() string {
+	base := filepath.Base(string(m))
+	i := strings.LastIndex(base, "_")
+	if i == -1 {
+		return ""
+	}
+	return base[0:i]
+}
 
 func (m modpath) version() Version {
 	base := filepath.Base(string(m))
@@ -145,8 +163,13 @@ func parseVersion(version string) Version {
 	return Version{Major: major, Minor: minor, Patch: patch}
 }
 
+func (m modpath) info() (Info, error) {
+	return LoadInfo(string(m))
+}
+
 type Version struct {
 	Major, Minor, Patch int
+	Info                Info
 }
 
 func (v Version) String() string {

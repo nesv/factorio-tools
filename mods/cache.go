@@ -12,12 +12,15 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
+	semver "github.com/Masterminds/semver/v3"
 	"github.com/Masterminds/squirrel"
 	progressbar "github.com/schollz/progressbar/v3"
 	_ "modernc.org/sqlite"
@@ -529,34 +532,226 @@ func SortByDate() SearchOption {
 	}
 }
 
-// Category is used to describe a mod.
-// Mods can only belong to a single category.
-type Category string
-
-const (
-	NoCategory    Category = "no-category"
-	Content                = "content"       // Mods introducing new content into the game.
-	Overhaul               = "overhaul"      // Large total conversion mods.
-	Tweaks                 = "tweaks"        // Small changes concerning balance, gameplay, or graphics.
-	Utilities              = "utilities"     // Providing the player with new tools or adjusting the game interface, without fundamentally changing gameplay.
-	Scenarios              = "scenarios"     // Scenarios, maps, puzzles.
-	ModPacks               = "mod-packs"     // Collections of mods with tweaks to make them work together.
-	Localizations          = "localizations" // Translations for other mods.
-	Internal               = "internal"      // Lua libraries for use by other mods and submods that are parts of a larger mod.
-)
-
-// Categories returns a list of all available categories.
-func Categories() []string {
-	return []string{
-		"",
-		string(NoCategory),
-		string(Content),
-		string(Overhaul),
-		string(Tweaks),
-		string(Utilities),
-		string(Scenarios),
-		string(ModPacks),
-		string(Localizations),
-		string(Internal),
+// Get downloads the latest version of a mod to the cache, and returns the
+// absolute path to the cached mod file.
+//
+// If the mod needs to be downloaded from the Factorio Mod Portal, the user's
+// username and token must be provided.
+// The username and token can be retrieved with
+// [github.com/nesv/factorio-tools/userdata.LoadPlayerData].
+func (c *Cache) Get(ctx context.Context, name, username, token string) (cachedPath string, err error) {
+	if name == "" {
+		return "", errors.New("empty name")
 	}
+
+	version, err := c.LatestVersion(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("get latest version: %w", err)
+	}
+
+	// Make sure the mod cache directory exists.
+	modCacheDir, err := c.ModDir()
+	if err != nil {
+		return "", fmt.Errorf("mod dir: %w", err)
+	}
+
+	var (
+		downloadp bool // Do we need to download the mod?
+		modpath   = filepath.Join(modCacheDir, fmt.Sprintf("%s_%s.zip", name, version))
+	)
+	if _, err := os.Stat(modpath); errors.Is(err, fs.ErrNotExist) {
+		downloadp = true
+	} else if err != nil {
+		return "", fmt.Errorf("stat %s: %w", modpath, err)
+	}
+
+	// If the mod does not need to be downloaded (because we already have
+	// it), return the path.
+	if !downloadp {
+		return modpath, nil
+	}
+
+	if username == "" {
+		return "", errors.New("username required for download")
+	}
+	if token == "" {
+		return "", errors.New("token required for download")
+	}
+
+	// Hmm, looks like we need to download the mod.
+	// Get the mod's download URL.
+	durl, err := c.DownloadURL(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("get download url: %w", err)
+	}
+
+	// Add the username and token to the download URL.
+	query := durl.Query()
+	query.Set("username", username)
+	query.Set("token", token)
+
+	durl.RawQuery = query.Encode()
+
+	// Download the mod.
+	resp, err := httputil.Get(ctx, durl.String())
+	if err != nil {
+		return "", fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+
+	f, err := os.Create(modpath)
+	if err != nil {
+		return "", fmt.Errorf("create %q: %w", modpath, err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return "", fmt.Errorf("copy: %w", err)
+	}
+
+	return modpath, nil
+}
+
+// ModDir returns the directory where mods should be downloaded to.
+// The directory will be created before ModDir returns.
+func (c *Cache) ModDir() (string, error) {
+	dir := filepath.Join(c.dir, "mods")
+	if err := os.MkdirAll(dir, fs.ModePerm); err != nil {
+		return "", fmt.Errorf("mkdir %q: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// DownloadURL returns the URL for retrieving a mod.
+// The mod's name must be an exact match.
+//
+// If no mods can be found by name, the cache can be updated by calling
+// [Cache.Update].
+func (c *Cache) DownloadURL(ctx context.Context, name string) (*url.URL, error) {
+	if name == "" {
+		return nil, errors.New("empty name")
+	}
+
+	query, args, err := squirrel.Select("download_url").
+		From("latest_releases").
+		Where(squirrel.Eq{"name": name}).
+		Limit(1).
+		ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	var path string
+	if err := c.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(ctx, query, args...)
+		if err := row.Err(); err != nil {
+			return err
+		}
+		if err := row.Scan(&path); err != nil {
+			return fmt.Errorf("scan: %w", err)
+		}
+		return nil
+	}); errors.Is(err, sql.ErrNoRows) {
+		return nil, errors.New("no mod found")
+	} else if err != nil {
+		return nil, err
+	}
+
+	return &url.URL{
+		Scheme: "https",
+		Host:   "mods.factorio.com",
+		Path:   path,
+	}, nil
+}
+
+// LatestVersion returns the latest released version of a mod.
+// The mod name must be an exact match.
+func (c *Cache) LatestVersion(ctx context.Context, name string) (*semver.Version, error) {
+	if name == "" {
+		return nil, errors.New("empty name")
+	}
+
+	query, args, err := squirrel.Select("version").
+		From("latest_releases").
+		Where(squirrel.Eq{"name": name}).
+		Limit(1).
+		ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	var vstr string
+	if err := c.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(ctx, query, args...)
+		if err := row.Err(); err != nil {
+			return err
+		}
+		if err := row.Scan(&vstr); err != nil {
+			return fmt.Errorf("scan: %w", err)
+		}
+		return nil
+	}); errors.Is(err, sql.ErrNoRows) {
+		return nil, errors.New("no mod found")
+	} else if err != nil {
+		return nil, err
+	}
+
+	version, err := semver.NewVersion(vstr)
+	if err != nil {
+		return nil, fmt.Errorf("parse version %q: %w", vstr, err)
+	}
+	return version, nil
+}
+
+// Mods returns a listing of all mods that are saved in the cache.
+func (c *Cache) Mods() ([]M, error) {
+	dir, err := c.ModDir()
+	if err != nil {
+		return nil, fmt.Errorf("mod dir: %w", err)
+	}
+
+	pattern := filepath.Join(dir, "*_*.zip")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("glob: %w", err)
+	}
+	slices.Sort(matches)
+
+	// Keep track of when there are multiple versions of a mod.
+	modVersions := make(map[string][]modpath)
+	for _, match := range matches {
+		mp := modpath(match)
+		name := mp.name()
+		versions, ok := modVersions[name]
+		if !ok {
+			versions = []modpath{}
+		}
+		versions = append(versions, mp)
+		modVersions[name] = versions
+	}
+
+	mm := make([]M, len(modVersions))
+	i := 0
+	for name, paths := range modVersions {
+		versions := make([]Version, len(paths))
+		for j, p := range paths {
+			version := p.version()
+
+			info, err := p.info()
+			if err != nil {
+				return nil, fmt.Errorf("load info for %s version %s: %w", name, version, err)
+			}
+			version.Info = info
+
+			versions[j] = version
+		}
+
+		mm[i] = M{
+			Name:     name,
+			Versions: versions,
+		}
+		i++
+	}
+
+	return mm, nil
 }

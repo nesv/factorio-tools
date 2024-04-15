@@ -3,6 +3,7 @@ module github.com/nesv/factorio-tools
 go 1.22.1
 
 require (
+	github.com/Masterminds/semver/v3 v3.2.1
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/dustin/go-humanize v1.0.1
 	github.com/peterbourgon/ff/v4 v4.0.0-alpha.4
